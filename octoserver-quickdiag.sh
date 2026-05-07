@@ -305,12 +305,135 @@ tar -czf "$TAR" -C /tmp \
   "$(basename "$OUT")" \
   "$(basename "$LSPCI_FILE")" 2>/dev/null
 
+# ===========================================================================
+hr "12. UPLOAD TO OCTOSERVER"
+
+# --- Upload configuration ---------------------------------------------------
+# Token is provided at runtime — never embedded in this script.
+# Operator obtains a fine-grained PAT from Octoserver per incident, scoped to:
+#   Nordit-Group/Octoserver-Diag-Reports — Contents: Read and write
+GH_REPO="Nordit-Group/Octoserver-Diag-Reports"
+GH_TOKEN=""
+
+# Allow non-interactive use via env var: OCTODIAG_TOKEN=ghp_xxx ./script.sh
+if [ -n "${OCTODIAG_TOKEN:-}" ]; then
+  GH_TOKEN="$OCTODIAG_TOKEN"
+  echo "Upload token: provided via OCTODIAG_TOKEN environment variable"
+else
+  # Interactive prompt — read from controlling terminal even if stdout is piped
+  if [ -t 0 ] || [ -e /dev/tty ]; then
+    echo
+    echo "An upload token is required to deliver the report to Octoserver."
+    echo "If you do not have one, press ENTER to skip and the tarball will"
+    echo "be retained locally for manual return."
+    echo
+    if [ -e /dev/tty ]; then
+      printf "Paste upload token (input hidden): "
+      stty -echo < /dev/tty 2>/dev/null
+      IFS= read -r GH_TOKEN < /dev/tty
+      stty echo < /dev/tty 2>/dev/null
+      echo
+    else
+      printf "Paste upload token (input hidden): "
+      stty -echo 2>/dev/null
+      IFS= read -r GH_TOKEN
+      stty echo 2>/dev/null
+      echo
+    fi
+  fi
+fi
+
+UPLOAD_OK=0
+UPLOAD_URL=""
+UPLOAD_ERR=""
+
+# Sanitize hostname into valid release tag (lowercase, [a-z0-9-] only)
+TAG=$(echo "$HOST" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | sed 's/-\+/-/g; s/^-//; s/-$//')
+[ -z "$TAG" ] && TAG="unknown-host"
+ASSET_NAME="$(basename "$TAR")"
+
+if ! have curl; then
+  UPLOAD_ERR="curl not present on this system"
+elif [ -z "$GH_TOKEN" ]; then
+  UPLOAD_ERR="no upload token provided (skipped by operator)"
+else
+  echo "Looking up release for host: $TAG"
+  REL_RESP=$(timeout 15 curl -sS \
+    -H "Authorization: Bearer $GH_TOKEN" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "https://api.github.com/repos/$GH_REPO/releases/tags/$TAG" 2>&1)
+  REL_ID=$(echo "$REL_RESP" | grep -m1 '"id":' | head -1 | grep -oE '[0-9]+')
+
+  if echo "$REL_RESP" | grep -qE '"message":\s*"(Bad credentials|Not Found)"' && [ -z "$REL_ID" ]; then
+    if echo "$REL_RESP" | grep -q "Bad credentials"; then
+      UPLOAD_ERR="GitHub returned 'Bad credentials' — token is invalid or expired"
+    else
+      echo "No existing release for $TAG. Creating new release..."
+      CREATE_RESP=$(timeout 15 curl -sS -X POST \
+        -H "Authorization: Bearer $GH_TOKEN" \
+        -H "Accept: application/vnd.github+json" \
+        -H "X-GitHub-Api-Version: 2022-11-28" \
+        "https://api.github.com/repos/$GH_REPO/releases" \
+        -d "{\"tag_name\":\"$TAG\",\"name\":\"$TAG\",\"body\":\"Diagnostic reports for host: $HOST\\nFirst report: $(date -u +%FT%TZ)\"}" 2>&1)
+      REL_ID=$(echo "$CREATE_RESP" | grep -m1 '"id":' | head -1 | grep -oE '[0-9]+')
+      if [ -z "$REL_ID" ]; then
+        UPLOAD_ERR="failed to create release: $(echo "$CREATE_RESP" | grep -oE '"message":\s*"[^"]+"' | head -1)"
+      fi
+    fi
+  fi
+
+  if [ -n "$REL_ID" ] && [ -z "$UPLOAD_ERR" ]; then
+    echo "Uploading $ASSET_NAME ($(du -h "$TAR" | cut -f1)) to release $REL_ID..."
+    UP_RESP=$(timeout 120 curl -sS -X POST \
+      -H "Authorization: Bearer $GH_TOKEN" \
+      -H "Accept: application/vnd.github+json" \
+      -H "X-GitHub-Api-Version: 2022-11-28" \
+      -H "Content-Type: application/gzip" \
+      --data-binary "@$TAR" \
+      "https://uploads.github.com/repos/$GH_REPO/releases/$REL_ID/assets?name=$ASSET_NAME" 2>&1)
+    if echo "$UP_RESP" | grep -q '"browser_download_url"'; then
+      UPLOAD_URL=$(echo "$UP_RESP" | grep -m1 '"browser_download_url"' | sed -E 's/.*"(https:[^"]+)".*/\1/')
+      UPLOAD_OK=1
+      echo "Upload succeeded."
+    else
+      UPLOAD_ERR=$(echo "$UP_RESP" | grep -oE '"message":\s*"[^"]+"' | head -1 | sed 's/"message":\s*//; s/"//g')
+      [ -z "$UPLOAD_ERR" ] && UPLOAD_ERR="unknown upload failure"
+    fi
+  fi
+fi
+
+# Clear token from environment immediately
+unset GH_TOKEN OCTODIAG_TOKEN
+
+# ===========================================================================
 hr "DONE"
 echo "Text report:   $OUT"
 echo "Full lspci:    $LSPCI_FILE"
 echo "Tarball:       $TAR  ($(du -h "$TAR" 2>/dev/null | cut -f1))"
+echo "SHA256:        $(sha256sum "$TAR" 2>/dev/null | cut -d' ' -f1)"
 echo
-echo ">> Send the tarball back to Octoserver support."
+
+if [ "$UPLOAD_OK" = 1 ]; then
+  echo "================================================================"
+  echo "  UPLOAD: OK"
+  echo "  $UPLOAD_URL"
+  echo "================================================================"
+  echo
+  echo ">> The diagnostic has been delivered to Octoserver."
+  echo ">> The local tarball has been retained for your records."
+else
+  echo "================================================================"
+  echo "  UPLOAD: FAILED"
+  echo "  Reason: $UPLOAD_ERR"
+  echo "================================================================"
+  echo
+  echo ">> The automatic upload did not complete."
+  echo ">> Please return the tarball manually:"
+  echo "      $TAR"
+  echo ">> Email it as an attachment to your Octoserver support contact,"
+  echo ">> or send via your existing support channel."
+fi
 echo
 
 exit 0
