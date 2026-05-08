@@ -311,8 +311,8 @@ hr "12. UPLOAD TO OCTOSERVER"
 # --- Upload configuration ---------------------------------------------------
 # Token is provided at runtime — never embedded in this script.
 # Operator obtains a fine-grained PAT from Octoserver per incident, scoped to:
-#   Nordit-Group/Octoserver-Diag-Reports — Contents: Read and write
-GH_REPO="Nordit-Group/Octoserver-Diag-Reports"
+#   OctoMarek/Octoserver-Diag-Reports — Contents: Read and write
+GH_REPO="OctoMarek/Octoserver-Diag-Reports"
 GH_TOKEN=""
 
 # Allow non-interactive use via env var: OCTODIAG_TOKEN=ghp_xxx ./script.sh
