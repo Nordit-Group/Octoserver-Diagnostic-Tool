@@ -186,11 +186,23 @@ if have rdmsr || [ -d /sys/devices/system/machinecheck ]; then
   echo "(empty = all MCE banks clean)"
 fi
 
-if [ -f /var/log/mcelog ]; then
-  sub "/var/log/mcelog tail"
-  tail -40 /var/log/mcelog
+# Modern hardware-error decoding via rasdaemon (replaces deprecated mcelog).
+# On Ubuntu 24.04+ mcelog has been dropped from the archive; rasdaemon is
+# the supported replacement. Both paths are checked for compatibility with
+# older systems that may still have mcelog installed.
+if have ras-mc-ctl; then
+  sub "rasdaemon summary (ras-mc-ctl --summary)"
+  ras-mc-ctl --summary 2>/dev/null
+  sub "rasdaemon errors (ras-mc-ctl --errors)"
+  ras-mc-ctl --errors 2>/dev/null | head -60
+elif have mcelog || [ -f /var/log/mcelog ]; then
+  # Legacy systems only
+  [ -f /var/log/mcelog ] && { sub "/var/log/mcelog tail (legacy)"; tail -40 /var/log/mcelog; }
+  have mcelog && { sub "mcelog --client (legacy)"; mcelog --client 2>/dev/null | head -40; }
+else
+  sub "Hardware-error daemon"
+  echo "Neither rasdaemon nor mcelog present. Install with: sudo apt install -y rasdaemon"
 fi
-have mcelog && { sub "mcelog --client"; mcelog --client 2>/dev/null | head -40; }
 
 if [ -d /sys/devices/system/edac ]; then
   sub "EDAC counters"
