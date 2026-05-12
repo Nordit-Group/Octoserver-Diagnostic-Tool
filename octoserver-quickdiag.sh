@@ -174,22 +174,16 @@ if have dmidecode; then
     | sed 's/^[[:space:]]*//'
 fi
 
-if have rdmsr || [ -d /sys/devices/system/machinecheck ]; then
-  sub "AMD MCE bank status (via /sys/devices/system/machinecheck)"
-  for d in /sys/devices/system/machinecheck/machinecheck*/bank*; do
-    [ -e "$d" ] || continue
-    val=$(cat "$d" 2>/dev/null)
-    cpu=$(echo "$d" | grep -oE 'machinecheck[0-9]+')
-    bank=$(basename "$d")
-    [ "$val" != "0" ] && [ -n "$val" ] && echo "  $cpu/$bank: $val"
-  done
-  echo "(empty = all MCE banks clean)"
-fi
-
-# Modern hardware-error decoding via rasdaemon (replaces deprecated mcelog).
+# Hardware-error decoding via rasdaemon (replaces deprecated mcelog).
 # On Ubuntu 24.04+ mcelog has been dropped from the archive; rasdaemon is
 # the supported replacement. Both paths are checked for compatibility with
 # older systems that may still have mcelog installed.
+#
+# Note: The /sys/devices/system/machinecheck/*/bank* files are NOT status
+# registers — they expose the MCi_CTL mask (which bits to monitor). On AMD
+# Genoa all banks read 0xffffffffffffffff by default, which means "all error
+# types enabled for reporting". This is NOT a sign of errors. Real MCE
+# status comes from rasdaemon and EDAC below.
 if have ras-mc-ctl; then
   sub "rasdaemon summary (ras-mc-ctl --summary)"
   ras-mc-ctl --summary 2>/dev/null
